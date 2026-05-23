@@ -70,14 +70,28 @@
 (define-struct ffi-test-t
   (n :size-t)
   (ns (:int *)))
+(define-function (get-value "get_value") (:struct ffi-test-t) (:size-t))
 (define-function (fill-values "fill_values") :void (((:struct ffi-test-t) *)))
 (define-function (sum-values "sum_values") :void (((:struct ffi-test-t) *) (:int *)))
 (define-function (free-values "free_values") :void ((:struct ffi-test-t)))
 
-(stack-allocate ((test (:struct ffi-test-t))
+(stack-allocate ((test (:struct ffi-test-t) (get-value 10))
                  (values :int))
-  (setf (slot test 'n) 10)
   (fill-values (addr test))
   (sum-values (addr test) (addr values))
   (free-values test)
   (print values))
+
+
+
+;; 7. Callbacks
+(define-variable (mult2 "mult2") (:function :int :int))
+(define-function (check-mult2 "check_mult2") :int ((:function :int :int)))
+(define-function (op "op") :int ((:function :int :int) :int))
+
+(define-callback mult3 :int ((x :int))
+  (* x 3))
+
+(print (check-mult2 mult2))
+(print (op mult2 5))
+(print (op mult3 5))

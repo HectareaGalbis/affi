@@ -110,6 +110,9 @@
 
   (defmacro %cast (value type)
     `(sb-alien:cast ,value ,(%translate-type type)))
+
+  (defun %null-pointer (value)
+    (sb-alien:null-alien value))
   
   (defmacro %sizeof (type)
     `(sb-alien:alien-size ,(%translate-type type) :bytes))
@@ -169,19 +172,18 @@
         (sb-alien:extern-alien ,name (sb-alien:function ,translated-res-type ,@translated-arg-types))
         ,@args)))
 
-  (defmacro %call-function-into (name res-type (&rest arg-types) (&rest args) obj)
-    (let ((translated-res-type (%translate-ret-type res-type))
-          (translated-arg-types (mapcar #'%translate-type arg-types)))
-      `(sb-alien:alien-funcall-into
-        (extern-alien ,name (sb-alien:function ,translated-res-type ,@translated-arg-types))
-        (sb-alien:alien-sap ,obj) ,@args)))
+  (defun %foreign-funcall (func &rest args)
+    (apply #'sb-alien:alien-funcall func args))
 
   (defmacro %define-callback (name res-type (&rest args) &body body)
-    (let ((translated-res-type (%translate-ret-type res-type))
-          (translated-args (loop for (arg type) in args
-                                 collect (list arg (%translate-type type)))))
-      `(sb-alien:define-alien-callable ,name ,translated-res-type (,@translated-args)
-         ,@body)))
+    (with-gensyms (alien-callback)
+      (let ((translated-res-type (%translate-ret-type res-type))
+            (translated-args (loop for (arg type) in args
+                                   collect (list arg (%translate-type type)))))
+        `(progn
+           (sb-alien:define-alien-callable ,alien-callback ,translated-res-type (,@translated-args)
+             ,@body)
+           (defparameter ,name (sb-alien:alien-callable-function ',alien-callback))))))
 
   (defun %get-callback (name)
     (sb-alien:alien-callable-function name))
