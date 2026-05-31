@@ -63,7 +63,9 @@
 (let* ((new-text (allocate :char (1+ (strlen text)))))
   (print (to-lisp-string text))
   (text-uppercase new-text)
-  (print (to-lisp-string new-text)))
+  (prog1
+      (print (to-lisp-string new-text))
+    (free new-text)))
 
 
 ;; 6. Structs
@@ -83,15 +85,18 @@
   (print values))
 
 
-
 ;; 7. Callbacks
-(define-variable (mult2 "mult2") (:function :int :int))
-(define-function (check-mult2 "check_mult2") :int ((:function :int :int)))
-(define-function (op "op") :int ((:function :int :int) :int))
+(define-function (mult2 "mult2") :int (:int))
+(define-function (check-mult2 "check_mult2") :int (((:function :int :int) *)))
+(define-variable (func-ptr "func_ptr") ((:function :int :int) *))
+(define-function (op "op") :int (((:function :int :int) *) :int))
+
+(print (check-mult2 (addr mult2)))
+(print (op (addr mult2) 8))
+(print (op func-ptr 10))
 
 (define-callback mult3 :int ((x :int))
   (* x 3))
 
-(print (check-mult2 mult2))
-(print (op mult2 5))
-(print (op mult3 5))
+(print (mult3 3))
+(print (op (addr mult3) 7))

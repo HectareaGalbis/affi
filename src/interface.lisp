@@ -47,15 +47,7 @@
   `(%call-function ,name ,res-type ,arg-types ,args))
 
 (defmacro define-function ((name foreign-name) res-type (&rest arg-types))
-  (loop for arg-type in arg-types
-        collect (gensym) into function-args
-        finally
-           (return
-             `(defun ,name (,@function-args)
-                (call-function ,foreign-name ,res-type ,arg-types ,function-args)))))
-
-(defun foreign-funcall (func &rest args)
-  (apply #'%foreign-funcall func args))
+  `(%define-function (,name ,foreign-name) ,res-type ,arg-types))
 
 (defmacro define-callback (name res-type (&rest args) &body body)
   `(%define-callback ,name ,res-type (,@args) ,@body))

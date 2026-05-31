@@ -52,6 +52,19 @@
   
   (defparameter *primitive-type-names* (%make-primitive-type-names))
 
+  (defclass function-info ()
+    ((callbackp :initarg :callbackp :initform nil)
+     (funcvar   :initarg :funcvar)
+     (functype  :initarg :functype)))
+  
+  (defparameter *functions* (make-hash-table :test 'eq))
+
+  (defun function-info (func)
+    (values (gethash func *functions*)))
+
+  (defun (setf function-info) (info func)
+    (setf (gethash func *functions*) info))
+
   (defun %type-name-type (type-name)
     (if (consp type-name)
         (car type-name)
@@ -133,7 +146,12 @@
 
   (defmacro %addr (expr)
     (if (symbolp expr)
-        `(sb-alien:addr ,expr)
+        (if-let ((func-info (function-info expr)))
+          (with-slots (callbackp funcvar functype) func-info
+            (if callbackp
+                `(sb-alien:cast (sb-alien:alien-callable-function ',funcvar) (* ,functype))
+                `(sb-alien:addr ,funcvar)))
+          `(sb-alien:addr ,expr))
         (case (car expr)
           (deref `(sb-alien:addr (sb-alien:deref ,@(cdr expr))))
           (slot `(sb-alien:addr (sb-alien:slot ,@(cdr expr)))))))
@@ -164,6 +182,9 @@
 
   (defmacro %define-union (name &rest slots)
     `(%define-record sb-alien:union ,name ,@slots))
+
+  (defmacro %define-variable ((name foreign-name) type)
+    `(sb-alien:define-alien-variable (,foreign-name ,name) ,(%translate-type type)))
   
   (defmacro %call-function (name res-type (&rest arg-types) (&rest args))
     (let ((translated-res-type (%translate-ret-type res-type))
@@ -172,24 +193,39 @@
         (sb-alien:extern-alien ,name (sb-alien:function ,translated-res-type ,@translated-arg-types))
         ,@args)))
 
-  (defun %foreign-funcall (func &rest args)
-    (apply #'sb-alien:alien-funcall func args))
+  (defmacro %define-function ((name foreign-name) res-type (&rest arg-types))
+    (let* ((translated-res-type (%translate-ret-type res-type))
+           (translated-arg-types (mapcar #'%translate-type arg-types))
+           (translated-args (loop for translated-arg-type in translated-arg-types
+                                  collect (list (gensym) translated-arg-type)))
+           (func-var (or (car (function-info *functions*)) (gensym (symbol-name name))))
+           (translated-func-type `(sb-alien:function ,translated-res-type ,@translated-arg-types)))
+      `(progn
+         (eval-when (:compile-toplevel :load-toplevel :execute)
+           (setf (function-info ',name)
+                 (make-instance 'function-info :funcvar ',func-var
+                                               :functype ',translated-func-type)))
+         (sb-alien:define-alien-variable (,foreign-name ,func-var) ,translated-func-type)
+         (sb-alien:define-alien-routine (,foreign-name ,name) ,translated-res-type ,@translated-args))))
 
   (defmacro %define-callback (name res-type (&rest args) &body body)
     (with-gensyms (alien-callback)
-      (let ((translated-res-type (%translate-ret-type res-type))
-            (translated-args (loop for (arg type) in args
-                                   collect (list arg (%translate-type type)))))
+      (let* ((translated-res-type (%translate-ret-type res-type))
+             (translated-args (loop for (arg type) in args
+                                    collect (list arg (%translate-type type))))
+             (translated-arg-types (mapcar #'cadr translated-args))
+             (translated-func-type `(sb-alien:function ,translated-res-type ,@translated-arg-types))
+             (lisp-args (loop for (arg type) in args collect arg)))
         `(progn
+           (eval-when (:compile-toplevel :load-toplevel :execute)
+             (setf (function-info ',name)
+                   (make-instance 'function-info :callbackp t
+                                                 :funcvar ',alien-callback
+                                                 :functype ',translated-func-type)))
            (sb-alien:define-alien-callable ,alien-callback ,translated-res-type (,@translated-args)
              ,@body)
-           (defparameter ,name (sb-alien:alien-callable-function ',alien-callback))))))
-
-  (defun %get-callback (name)
-    (sb-alien:alien-callable-function name))
+           (defun ,name (,@lisp-args)
+             ,@body)))))
 
   (defun %load-shared-object (pathname &key dont-save)
-    (sb-alien:load-shared-object pathname :dont-save dont-save))
-
-  (defmacro %define-variable ((name foreign-name) type)
-    `(sb-alien:define-alien-variable (,foreign-name ,name) ,(%translate-type type))))
+    (sb-alien:load-shared-object pathname :dont-save dont-save)))
