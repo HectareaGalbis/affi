@@ -22,3 +22,16 @@
   :components ((:module "test"
                 :components ((:file "package")
                              (:file "test")))))
+
+(defsystem "trivial-ffi/docs"
+  :author "Héctor Galbis Sanchis"
+  :description "Documentation for trivial-ffi"
+  :defsystem-depends-on (:adp-github)
+  :depends-on (:trivial-ffi)
+  :serial t
+  :class :adp-github
+  :components ((:module "scribble"
+                :serial t
+                :components ((:file "package")
+                             (:scribble "README")
+                             (:scribble "reference")))))
