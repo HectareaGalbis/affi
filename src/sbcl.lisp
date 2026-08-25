@@ -65,78 +65,48 @@
   (defun (setf function-info) (info func)
     (setf (gethash func *functions*) info))
 
-  (defun %type-name-type (type-name)
-    (if (consp type-name)
-        (car type-name)
-        :primitive))
+  (defgeneric %translate-type ((ptype ffi-type)))
 
-  (defun %make-primitive-type (type-name)
-    (gethash type-name *primitive-type-names*))
-  
-  (defun %make-struct-type (name)
-    `(sb-alien:struct ,name))
+  (defmethod %translate-type ((ptype primitive-type))
+    (gethash (primitive-type-name ptype) *primitive-type-names*))
 
-  (defun %make-union-type (name)
-    `(sb-alien:union ,name))
+  (defmethod %translate-type ((ptype struct-type))
+    `(sb-alien:struct ,(struct-type-name ptype)))
 
-  (defun %make-array-type (subtype dimensions)
-    `(sb-alien:array ,subtype ,@dimensions))
+  (defmethod %translate-type ((ptype union-type))
+    `(sb-alien:union ,(union-type-name ptype)))
 
-  (defun %make-pointer-type (subtype)
-    `(sb-alien:* ,subtype))
+  (defmethod %translate-type ((ptype function-type))
+    (let* ((ret-type (function-type-result-type ptype))
+           (t-ret-type (if (and (typep ret-type 'primitive-type)
+                                (eq (primitive-type-name ret-type) :void))
+                           'sb-alien:void
+                           (translate-type ret-type))))
+      (list* 'sb-alien:function t-ret-type (mapcar #'translate-type
+                                                   (function-type-argument-types ptype)))))
 
-  (defun %make-function-type (types)
-    (list* 'sb-alien:function types))
+  (defmethod %translate-type ((ptype array-type))
+    `(sb-alien:array ,(translate-type (array-type-data-type ptype)) ,(array-type-size ptype)))
 
-  
-  (defun %extract-next-specifier (specifiers)
-    (if (eq '* (car specifiers))
-        (values '* (cdr specifiers) :pointer)
-        (loop for num-specs on specifiers
-              while (not (eq (car num-specs) '*))
-              collect (car num-specs) into nums
-              finally (return (values nums num-specs :dimensions)))))
+  (defmethod %translate-type ((ptype pointer-type))
+    `(sb-alien:* ,(translate-type (pointer-type-data-type ptype))))
 
-  (defun %translate-type (%type &aux (type (%canonize-type %type)))
-    (let* ((type-name (car type))
-           (specifiers (cdr type))
-           (result-type (case (%type-name-type type-name)
-                          (:primitive (%make-primitive-type type-name))
-                          (:struct    (%make-struct-type (cadr type-name)))
-                          (:union     (%make-union-type (cadr type-name)))
-                          (:function  (%make-function-type (mapcar #'%translate-type (cdr type-name)))))))
-      (loop while (not (null specifiers))
-            do (multiple-value-bind (next-specifier rest-specifiers specifier-type)
-                   (%extract-next-specifier specifiers)
-                 (case specifier-type
-                   (:pointer    (setf result-type (%make-pointer-type result-type)))
-                   (:dimensions (setf result-type (%make-array-type result-type next-specifier))))
-                 (setf specifiers rest-specifiers)))
-      (values result-type)))
-
-  (defun %translate-ret-type (%type &aux (type (%canonize-type %type)))
-    (let ((type-name (car type))
-          (specifiers (cdr type)))
-      (if (and (eq type-name :void) (null specifiers))
-          'sb-alien:void
-          (%translate-type type))))
-
-  (defmacro %cast (value type)
+  (defun %cast (value type)
     `(sb-alien:cast ,value ,(%translate-type type)))
 
   (defun %null-pointer (value)
     (sb-alien:null-alien value))
   
-  (defmacro %sizeof (type)
+  (defun %sizeof (type)
     `(sb-alien:alien-size ,(%translate-type type) :bytes))
 
-  (defmacro %allocate (type &optional (size 1 sizep))
+  (defun %allocate (type &optional (size 1 sizep))
     `(sb-alien:make-alien ,(%translate-type type) ,@(when sizep `(,size))))
 
   (defun %free (obj)
     (sb-alien:free-alien obj))
 
-  (defmacro %stack-allocate ((&rest definitions) &body body)
+  (defun %stack-allocate (definitions body)
     (loop for (var type value) in definitions
           collect `(,var ,(%translate-type type) ,@(when value `(,value))) into alien-definitions
           finally
@@ -144,7 +114,7 @@
                `(sb-alien:with-alien (,@alien-definitions)
                   ,@body))))
 
-  (defmacro %addr (expr)
+  (defun %addr (expr)
     (if (symbolp expr)
         (if-let ((func-info (function-info expr)))
           (with-slots (callbackp funcvar functype) func-info
@@ -171,60 +141,57 @@
   (defsetf %slot (obj slot-name) (new-value)
     `(setf (sb-alien:slot ,obj ,slot-name) ,new-value))
 
-  (defmacro %define-record (struct-or-union name &rest slots)
+  (defun %define-record (struct-or-union name slots)
     (let ((translated-slots (loop for (name type) in slots
                                   collect `(,name ,(%translate-type type)))))
       `(sb-alien:define-alien-type nil
            (,struct-or-union ,name ,@translated-slots))))
 
-  (defmacro %define-struct (name &rest slots)
-    `(%define-record sb-alien:struct ,name ,@slots))
+  (defun %define-struct (name &rest slots)
+    (%define-record 'sb-alien:struct name slots))
 
-  (defmacro %define-union (name &rest slots)
-    `(%define-record sb-alien:union ,name ,@slots))
+  (defun %define-union (name &rest slots)
+    (%define-record 'sb-alien:union name slots))
 
-  (defmacro %define-variable ((name foreign-name) type)
+  (defun %define-variable (name foreign-name type)
     `(sb-alien:define-alien-variable (,foreign-name ,name) ,(%translate-type type)))
   
-  (defmacro %call-function (name res-type (&rest arg-types) (&rest args))
-    (let ((translated-res-type (%translate-ret-type res-type))
-          (translated-arg-types (mapcar #'%translate-type arg-types)))
-      `(sb-alien:alien-funcall
-        (sb-alien:extern-alien ,name (sb-alien:function ,translated-res-type ,@translated-arg-types))
-        ,@args)))
+  (defun %call-function (name functype args)
+    `(sb-alien:alien-funcall
+      (sb-alien:extern-alien ,name ,(%translate-type func-type)) ,@args))
 
-  (defmacro %define-function ((name foreign-name) res-type (&rest arg-types))
-    (let* ((translated-res-type (%translate-ret-type res-type))
-           (translated-arg-types (mapcar #'%translate-type arg-types))
+  (defun %define-function (name foreign-name functype)
+    (let* ((translated-functype (%translate-type functype))
+           (translated-result-type (cadr translated-functype))
+           (translated-arg-types (cddr translated-functype))
            (translated-args (loop for translated-arg-type in translated-arg-types
                                   collect (list (gensym) translated-arg-type)))
-           (func-var (or (car (function-info *functions*)) (gensym (symbol-name name))))
-           (translated-func-type `(sb-alien:function ,translated-res-type ,@translated-arg-types)))
+           (func-var (or (car (function-info *functions*)) (gensym (symbol-name name)))))
       `(progn
          (eval-when (:compile-toplevel :load-toplevel :execute)
            (setf (function-info ',name)
                  (make-instance 'function-info :funcvar ',func-var
-                                               :functype ',translated-func-type)))
-         (sb-alien:define-alien-variable (,foreign-name ,func-var) ,translated-func-type)
-         (sb-alien:define-alien-routine (,foreign-name ,name) ,translated-res-type ,@translated-args))))
+                                               :functype ',translated-functype)))
+         (sb-alien:define-alien-variable (,foreign-name ,func-var) ,translated-functype)
+         (sb-alien:define-alien-routine (,foreign-name ,name) ,translated-resutl-type ,@translated-args))))
 
-  (defmacro %define-callback (name res-type (&rest args) &body body)
+  (defmacro %define-callback (name functype args body)
     (with-gensyms (alien-callback)
-      (let* ((translated-res-type (%translate-ret-type res-type))
-             (translated-args (loop for (arg type) in args
-                                    collect (list arg (%translate-type type))))
-             (translated-arg-types (mapcar #'cadr translated-args))
-             (translated-func-type `(sb-alien:function ,translated-res-type ,@translated-arg-types))
-             (lisp-args (loop for (arg type) in args collect arg)))
+      (let* ((translated-functype (%translate-type functype))
+             (translated-result-type (cadr translated-functype))
+             (translated-arg-types (cddr translated-functype))
+             (translated-args (loop for arg in args
+                                    for type in translated-arg-types
+                                    collect (list arg type))))
         `(progn
            (eval-when (:compile-toplevel :load-toplevel :execute)
              (setf (function-info ',name)
                    (make-instance 'function-info :callbackp t
                                                  :funcvar ',alien-callback
-                                                 :functype ',translated-func-type)))
-           (sb-alien:define-alien-callable ,alien-callback ,translated-res-type (,@translated-args)
+                                                 :functype ',translated-functype)))
+           (sb-alien:define-alien-callable ,alien-callback ,translated-resutl-type (,@translated-args)
              ,@body)
-           (defun ,name (,@lisp-args)
+           (defun ,name (,@args)
              ,@body)))))
 
   (defun %load-shared-object (pathname &key dont-save)
