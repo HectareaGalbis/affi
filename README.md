@@ -56,12 +56,7 @@ float pi = 3.14159274101257324219f;
 
 `````common-lisp
 (define-variable (pi-num "pi") :float)
-(print pi-num)
-`````
-`````text
-;; Output
-
-3.1415927 
+pi-num
 `````
 `````common-lisp
 ;; Returns

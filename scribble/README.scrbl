@@ -39,7 +39,7 @@ float pi = 3.14159274101257324219f;
 
 @example{
 (define-variable (pi-num "pi") :float)
-(print pi-num)
+pi-num
 }
 
 @subsubtitle{Functions}
