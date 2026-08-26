@@ -92,7 +92,7 @@ void text_uppercase(char* dst)
         (deref text 4) (char-code #\o)
         (deref text 5) 0)
   (text-uppercase (addr (deref text 0)))
-  (loop for i from 0 below 6
+  (loop for i from 0 below 5
         do (princ (code-char (deref text i)))))
 }
 
