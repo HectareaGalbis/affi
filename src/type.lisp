@@ -55,7 +55,7 @@
   (defclass ffi-type () ())
   
   (defclass primitive-type (ffi-type)
-    ((name :initarg :type
+    ((name :initarg :name
            :initform (error "Expected type argument")
            :accessor primitive-type-name)))
 

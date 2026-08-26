@@ -65,7 +65,7 @@
   (defun (setf function-info) (info func)
     (setf (gethash func *functions*) info))
 
-  (defgeneric %translate-type ((ptype ffi-type)))
+  (defgeneric %translate-type (ptype))
 
   (defmethod %translate-type ((ptype primitive-type))
     (gethash (primitive-type-name ptype) *primitive-type-names*))
@@ -81,15 +81,15 @@
            (t-ret-type (if (and (typep ret-type 'primitive-type)
                                 (eq (primitive-type-name ret-type) :void))
                            'sb-alien:void
-                           (translate-type ret-type))))
-      (list* 'sb-alien:function t-ret-type (mapcar #'translate-type
+                           (%translate-type ret-type))))
+      (list* 'sb-alien:function t-ret-type (mapcar #'%translate-type
                                                    (function-type-argument-types ptype)))))
 
   (defmethod %translate-type ((ptype array-type))
-    `(sb-alien:array ,(translate-type (array-type-data-type ptype)) ,(array-type-size ptype)))
+    `(sb-alien:array ,(%translate-type (array-type-data-type ptype)) ,(array-type-size ptype)))
 
   (defmethod %translate-type ((ptype pointer-type))
-    `(sb-alien:* ,(translate-type (pointer-type-data-type ptype))))
+    `(sb-alien:* ,(%translate-type (pointer-type-data-type ptype))))
 
   (defun %cast (value type)
     `(sb-alien:cast ,value ,(%translate-type type)))
@@ -100,8 +100,8 @@
   (defun %sizeof (type)
     `(sb-alien:alien-size ,(%translate-type type) :bytes))
 
-  (defun %allocate (type &optional (size 1 sizep))
-    `(sb-alien:make-alien ,(%translate-type type) ,@(when sizep `(,size))))
+  (defun %allocate (type size)
+    `(sb-alien:make-alien ,(%translate-type type) ,size))
 
   (defun %free (obj)
     (sb-alien:free-alien obj))
@@ -126,10 +126,10 @@
           (deref `(sb-alien:addr (sb-alien:deref ,@(cdr expr))))
           (slot `(sb-alien:addr (sb-alien:slot ,@(cdr expr)))))))
   
-  (defun %deref (obj &rest indices)
+  (defun %deref (obj indices)
     (apply #'sb-alien:deref obj indices))
 
-  (defsetf %deref (obj &rest indices) (new-value)
+  (defun %setf-deref (obj indices new-value)
     `(setf (sb-alien:deref ,obj ,@indices) ,new-value))
 
   (defun %slot (obj slot-name)
@@ -138,7 +138,7 @@
   (define-compiler-macro %slot (obj slot-name)
     `(sb-alien:slot ,obj ,slot-name))
 
-  (defsetf %slot (obj slot-name) (new-value)
+  (defun %setf-slot (obj slot-name new-value)
     `(setf (sb-alien:slot ,obj ,slot-name) ,new-value))
 
   (defun %define-record (struct-or-union name slots)
@@ -147,10 +147,10 @@
       `(sb-alien:define-alien-type nil
            (,struct-or-union ,name ,@translated-slots))))
 
-  (defun %define-struct (name &rest slots)
+  (defun %define-struct (name slots)
     (%define-record 'sb-alien:struct name slots))
 
-  (defun %define-union (name &rest slots)
+  (defun %define-union (name slots)
     (%define-record 'sb-alien:union name slots))
 
   (defun %define-variable (name foreign-name type)
@@ -158,24 +158,27 @@
   
   (defun %call-function (name functype args)
     `(sb-alien:alien-funcall
-      (sb-alien:extern-alien ,name ,(%translate-type func-type)) ,@args))
+      (sb-alien:extern-alien ,name ,(%translate-type functype)) ,@args))
 
-  (defun %define-function (name foreign-name functype)
+  (defun %define-function (name foreign-name functype args)
     (let* ((translated-functype (%translate-type functype))
            (translated-result-type (cadr translated-functype))
            (translated-arg-types (cddr translated-functype))
            (translated-args (loop for translated-arg-type in translated-arg-types
-                                  collect (list (gensym) translated-arg-type)))
-           (func-var (or (car (function-info *functions*)) (gensym (symbol-name name)))))
+                                  for arg in args
+                                  collect (list arg translated-arg-type)))
+           (func-var (or (if-let ((finfo (function-info name)))
+                           (slot-value finfo 'funcvar))
+                         (gensym (symbol-name name)))))
       `(progn
          (eval-when (:compile-toplevel :load-toplevel :execute)
            (setf (function-info ',name)
                  (make-instance 'function-info :funcvar ',func-var
                                                :functype ',translated-functype)))
          (sb-alien:define-alien-variable (,foreign-name ,func-var) ,translated-functype)
-         (sb-alien:define-alien-routine (,foreign-name ,name) ,translated-resutl-type ,@translated-args))))
+         (sb-alien:define-alien-routine (,foreign-name ,name) ,translated-result-type ,@translated-args))))
 
-  (defmacro %define-callback (name functype args body)
+  (defun %define-callback (name functype args body)
     (with-gensyms (alien-callback)
       (let* ((translated-functype (%translate-type functype))
              (translated-result-type (cadr translated-functype))
@@ -189,10 +192,10 @@
                    (make-instance 'function-info :callbackp t
                                                  :funcvar ',alien-callback
                                                  :functype ',translated-functype)))
-           (sb-alien:define-alien-callable ,alien-callback ,translated-resutl-type (,@translated-args)
+           (sb-alien:define-alien-callable ,alien-callback ,translated-result-type (,@translated-args)
              ,@body)
            (defun ,name (,@args)
              ,@body)))))
 
-  (defun %load-shared-object (pathname &key dont-save)
+  (defun %load-shared-object (pathname dont-save)
     (sb-alien:load-shared-object pathname :dont-save dont-save)))

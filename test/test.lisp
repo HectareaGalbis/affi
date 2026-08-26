@@ -18,19 +18,19 @@
 
 ;; 2. Simple function
 (define-function (get-five "get_five") :int ())
-(define-function (sum "sum") :double (:int :float :double))
+(define-function (sum "sum") :double ((a :int) (b :float) (c :double)))
 
 (print (get-five))
 (print (sum 10 3.5 4.76d0))
 
 ;; 3. Global variable address
-(define-function (check-vars "check_vars") :int ((:char *) (:int *) (:float *) (:double *)))
+(define-function (check-vars "check_vars") :int ((a (:char *)) (b (:int *)) (c (:float *)) (d (:double *))))
 
 (print (check-vars (addr a) (addr ten) (addr pi-num) (addr e)))
 
 ;; 4. Arrays
 (define-variable (fibo "fibo") (:int 10))
-(define-function (add-array "add_array") :void ((:int 10) (:int 10) (:int 10)))
+(define-function (add-array "add_array") :void ((a (:int 10)) (b (:int 10)) (c (:int 10))))
 
 (stack-allocate ((arg2 (:int 10))
                  (arg3 (:int 10)))
@@ -40,13 +40,13 @@
   (loop for i from 0 below 10
         do (format t "~%~a + ~a = ~a" (deref fibo i) (deref arg2 i) (deref arg3 i))))
 
-(define-function (check-fibo-7 "check_fibo_7") :int ((:int *)))
+(define-function (check-fibo-7 "check_fibo_7") :int ((a (:int *))))
 
 (print (check-fibo-7 (addr (deref fibo 7))))
 
 ;; 5. Strings
 (define-variable (text "text") (:char *))
-(define-function (text-uppercase "text_uppercase") :void ((:char *)))
+(define-function (text-uppercase "text_uppercase") :void ((text (:char *))))
 
 (defun strlen (str)
   (loop for i from 0
@@ -72,10 +72,10 @@
 (define-struct ffi-test-t
   (n :size-t)
   (ns (:int *)))
-(define-function (get-value "get_value") (:struct ffi-test-t) (:size-t))
-(define-function (fill-values "fill_values") :void (((:struct ffi-test-t) *)))
-(define-function (sum-values "sum_values") :void (((:struct ffi-test-t) *) (:int *)))
-(define-function (free-values "free_values") :void ((:struct ffi-test-t)))
+(define-function (get-value "get_value") (:struct ffi-test-t) ((size :size-t)))
+(define-function (fill-values "fill_values") :void ((values ((:struct ffi-test-t) *))))
+(define-function (sum-values "sum_values") :void ((as ((:struct ffi-test-t) *)) (bs (:int *))))
+(define-function (free-values "free_values") :void ((a (:struct ffi-test-t))))
 
 (stack-allocate ((test (:struct ffi-test-t) (get-value 10))
                  (values :int))
@@ -86,10 +86,10 @@
 
 
 ;; 7. Callbacks
-(define-function (mult2 "mult2") :int (:int))
-(define-function (check-mult2 "check_mult2") :int (((:function :int :int) *)))
+(define-function (mult2 "mult2") :int ((a :int)))
+(define-function (check-mult2 "check_mult2") :int ((a ((:function :int :int) *))))
 (define-variable (func-ptr "func_ptr") ((:function :int :int) *))
-(define-function (op "op") :int (((:function :int :int) *) :int))
+(define-function (op "op") :int ((a ((:function :int :int) *)) (b :int)))
 
 (print (check-mult2 (addr mult2)))
 (print (op (addr mult2) 8))

@@ -65,7 +65,7 @@ Each definition must be a list of a variable holding the allocated value
 and the type of the value.
 "
   (mapcar #'%check-stack-allocate-definition definitions)
-  (loop for (name type . value) in definitions
+  (loop for (name type value) in definitions
         for parsed-type = (parse-foreign-type type)
         collect `(,name ,parsed-type ,value) into parsed-definitions
         finally (return (%stack-allocate parsed-definitions body))))
@@ -85,14 +85,14 @@ OBJ must be a pointer or an array.
 INDICES can be used to deref an element of a given index
 from the pointer or the array.
 "
-  (apply #'%deref obj indices))
+  (%deref obj indices))
 
 (defsetf deref (obj &rest indices) (new-value)
-  `(setf (%deref ,obj ,@indices) ,new-value)
   "
 Assigns NEW-VALUE to the value pointed by OBJ at the position given by INDICES.
 The foreign value and NEW-VALUE must be of the same type.
-")
+"
+  (%setf-deref obj indices new-value))
 
 (defun slot (obj slot-name)
   "
@@ -104,15 +104,18 @@ Returns the slot SLOT-NAME of a record OBJ.
   "
 Assigns a NEW-VALUE to the slot SLOT-NAME of a record OBJ.
 "
-  `(setf (%slot ,obj ,slot-name) ,new-value))
+  (%setf-slot obj slot-name new-value))
 
 (defun %check-define-record-slot (slot)
   (with-syntax-error-handler slot
     (unless (and (listp slot)
                  (= (length slot) 2))
       (syntax-error "A record slot must be a list of two elements"))
-    (let ((name (car slot))
-          (type (cadr slot))))))
+    (when (ignore-errors (parse-foreign-type slot))
+      (syntax-error "A record slot must have a name before the type"))
+    (let ((name (car slot)))
+      (unless (symbolp name)
+        (syntax-error "The first element must be a symbol")))))
 
 (defmacro define-struct (name &body slots)
   "
@@ -122,11 +125,10 @@ and the type of that member.
 "
   (loop for slot in slots
         do (%check-define-record-slot slot)
-        for (name type) = slot
         collect (destructuring-bind (name type) slot
                   `(,name ,(parse-foreign-type type)))
           into parsed-slots
-        finally (return (%define-struct name ,parsed-slots))))
+        finally (return (%define-struct name parsed-slots))))
 
 (defmacro define-union (name &body slots)
   "
@@ -134,11 +136,10 @@ Same as DEFINE-STRUCT, but defines an union instead of a structure.
 "
   (loop for slot in slots
         do (%check-define-record-slot slot)
-        for (name type) = slot
         collect (destructuring-bind (name type) slot
                   `(,name ,(parse-foreign-type type)))
           into parsed-slots
-        finally (return (%define-union name ,parsed-slots))))
+        finally (return (%define-union name parsed-slots))))
 
 (defmacro define-variable ((name foreign-name) type)
   "
@@ -161,6 +162,17 @@ ARGS are the objects passed to the function.
                                     :argument-types (mapcar #'parse-foreign-type arg-types))
       args))
 
+(defun %check-define-function-argument (arg)
+  (with-syntax-error-handler arg
+    (unless (and (listp arg)
+                 (= (length arg) 2))
+      (syntax-error "A function argument must be a list of two elements"))
+    (when (ignore-errors (parse-foreign-type arg))
+      (syntax-error "An argument must have a name before the type"))
+    (let ((name (car arg)))
+      (unless (symbolp name)
+        (syntax-error "The first element must be a symbol")))))
+
 (defmacro define-function ((name foreign-name) res-type (&rest args))
   "
 Defines a foreign function called NAME.
@@ -169,17 +181,28 @@ NAME is a symbol denoting the name of the new defined function.
 The function will return a value of type RES-TYPE.
 ARG-TYPES denotes the types of the function's arguments.
 "
-  (loop for (name arg-type) in args
-        collect `(,name ,(parse-foreign-type arg-type)) into parsed-args
-        finally (return (%define-function name foreign-name (parse-foreign-type res-type) parsed-args))))
+  (loop for arg in args
+        do (%check-define-function-argument arg)
+        collect (car arg) into arg-names
+        collect (parse-foreign-type (cadr arg)) into arg-types
+        finally (return (%define-function name foreign-name
+                                          (make-instance 'function-type
+                                                         :result-type (parse-foreign-type res-type)
+                                                         :argument-types arg-types)
+                                          arg-names))))
 
 (defmacro define-callback (name res-type (&rest args) &body body)
   "
 Defines a function that can be called from C.
 "
-  (loop for (name arg-type) in args
-        collect `(,name ,(parse-foreign-type arg-type)) into parsed-args
-        finally (return (%define-callback name (parse-foreign-type res-type) parsed-args  body))))
+  (loop for arg in args
+        do (%check-define-function-argument arg)
+        collect (car arg) into arg-names
+        collect (parse-foreign-type (cadr arg)) into arg-types
+        finally (return (%define-callback name (make-instance 'function-type
+                                                         :result-type (parse-foreign-type res-type)
+                                                         :argument-types arg-types)
+                                          arg-names body))))
 
 (defun load-shared-object (pathname &key dont-save)
   "
