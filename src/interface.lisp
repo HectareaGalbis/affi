@@ -1,5 +1,5 @@
 
-(in-package #:tffi)
+(in-package #:affi)
 
 
 (eval-when (:compile-toplevel :load-toplevel :execute)

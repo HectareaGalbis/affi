@@ -1,3 +1,3 @@
 
-(defpackage #:test-tffi
-  (:use #:cl #:tffi))
+(defpackage #:test-affi
+  (:use #:cl #:affi))

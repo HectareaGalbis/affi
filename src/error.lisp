@@ -1,5 +1,5 @@
 
-(in-package #:tffi)
+(in-package #:affi)
 
 
 (define-condition syntax-error (program-error)

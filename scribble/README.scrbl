@@ -1,96 +1,146 @@
 
-(in-package :tffi-docs)
+(in-package :affi-docs)
 
 @output-file["/README.md"]
 
-@title[:toc nil]{Trivial FFI}
+@title[:toc nil]{Another Foreign Function Interface}
 
-Welcome to Trivial FFI :D
+Welcome to AFFI :D
 
 @table-of-contents[]
 
 @subtitle{Introduction}
 
-Trivial FFI tries to export a simple and unified interface to access C variables and functions.
+AFFI exports a simple interface to access C variables and functions.
 
-@subtitle{Getting started}
+Supported implementations: @bold{SBCL}
+
+@subtitle{Documentation}
+
+@itemize[
+@item[@tref[quick-start]{Quick start}]
+@item{@tref[tutorial]{Tutorial}}
+@item{@tref[reference]{Reference}}
+]
+
+@subtitle[:tag quick-start]{Quick start}
 
 @subsubtitle{Loading a shared library}
 
-@fref[load-shared-object]
-
-@code-block{
-(load-shared-object "libmyobject.so")
+@example{
+(load-shared-object "libtest-ffi.so")
 }
 
-@subtitle{Defining structs}
+@subsubtitle{Variables}
 
 @code-block[:lang "C"]{
-struct my_struct {
-  int k;
-  char p;
-};
+float pi = 3.14159274101257324219f;
 }
 
-@code-block[:lang "common-lisp"]{
-(define-struct my-struct
-  (k :int)
-  (p :char))
+@example{
+(define-variable (pi-num "pi") :float)
+(print pi-num)
 }
 
-@subtitle{Accessing to global variables}
-
-@fref[define-variable]
+@subsubtitle{Functions}
 
 @code-block[:lang "C"]{
-extern int my_int;
-extern float* my_float;
-extern char[5] my_chars;
-extern int (*my_func_ptr)(char, double);
-
-// Array of 5 pointers to arrays of 10 my_struct
-extern my_struct (*my_doubles[5])[10];
+int get_five(void)
+{
+  return 5;
+}
 }
 
-@code-block[:lang "common-lisp"]{
-(define-variable (my-int "my_int") :int)
-(define-variable (my-float "my_float") (:float *))
-(define-variable (my-chars "my_chars") (:char 5))
-(define-variable (my-func-ptr "my_func_ptr") ((:function :int :char :double) *))
-
-;; Array of 5 pointers to arrays of 10 my_struct
-(define-variable (my-doubles "my_doubles") ((:struct my_struct) 10 * 5))
+@example{
+(define-function (get-five "get_five") :int ())
+(get-five)
 }
 
-@subtitle{Defining functions}
+@subsubtitle{Arrays}
 
 @code-block[:lang "C"]{
-int mult2(int a){
-  return a * 2;
+int fibo[10] = {0, 1, 1, 2, 3, 5, 8, 13, 21, 34};
 }
 
-int mult3(int a){
-  return a * 3;
+@example[:results :output]{
+(define-variable (fibo "fibo") (:int 10))
+(loop for i from 0 below 10
+      do (print (deref fibo i)))
 }
 
-int op(int (*ptr)(int), int a){
-  return ptr(a);
+@subsubtitle{Strings}
+
+AFFI does not define any special type for strings.
+
+@code-block[:lang "C"]{
+void text_uppercase(char* dst)
+{
+  size_t i = 0;
+  for (; text[i] != '\0'; i++)
+    dst[i] = toupper(text[i]);
+  dst[i] = '\0';
 }
 }
 
-@code-block[:lang "common-lisp"]{
-(define-function (mult2 "mult2") :int (:int))
-(define-function (mult3 "mult3") :int (:int))
-(define-function (op "op") :int (((:function :int :int) *) :int))
-
-(define-callback mult4 (a)
-  (* a 4))
-
-(mult2 5) ;; --> 10
-(mult3 7) ;; --> 21
-(mult4 8) ;; --> 32
-
-(op (addr mult2) 8) --> 16
-(op (addr mult3) 4) --> 12
-(op (addr mult4) 5) --> 20
+@example[:results :output]{
+(define-function (text-uppercase "text_uppercase") :void ((dst (:char *))))
+(stack-allocate ((text (:char 6)))
+  (setf (deref text 0) (char-code #\H)
+        (deref text 1) (char-code #\e)
+        (deref text 2) (char-code #\l)
+        (deref text 3) (char-code #\l)
+        (deref text 4) (char-code #\o)
+        (deref text 5) 0)
+  (text-uppercase (addr (deref text 0)))
+  (loop for i from 0 below 6
+        do (princ (code-char (deref text i)))))
 }
+
+@subsubtitle{Structures}
+
+@code-block[:lang "C"]{
+typedef struct {
+  size_t n;
+  int* ns;
+} ffi_test_t;
+
+ffi_test_t get_value(size_t n)
+{
+  return (ffi_test_t){ n, NULL };
+}
+}
+
+@example[:results :output]{
+(define-struct ffi-test-t
+  (n :size-t)
+  (ns (:int *)))
+
+(define-function (get-value "get_value") (:struct ffi-test-t) ((size :size-t)))
+
+(stack-allocate ((test (:struct ffi-test-t) (get-value 10)))
+  (print (slot test 'n))
+  (setf (slot test 'n) 5)
+  (print (slot test 'n)))
+}
+
+@subsubtitle{Callbacks}
+
+@code-block[:lang "C"]{
+int op(int (*op_ptr)(int x), int x)
+{
+  return op_ptr(x);
+}
+}
+
+@example{
+(define-function (op "op") :int ((op-ptr ((:function :int :int) *)) (x :int)))
+
+(define-callback mult3 :int ((x :int))
+  (* x 3))
+
+(op (addr mult3) 7)
+}
+
+@subtitle[:tag reference]{Reference}
+
+@function-glossary[#:affi]

@@ -1,3 +1,3 @@
 
-(defpackage :tffi-docs
-  (:use :cl :tffi :adp-github))
+(defpackage :affi-docs
+  (:use :cl :affi :adp-github))

@@ -1,5 +1,5 @@
 
-(in-package #:tffi)
+(in-package #:affi)
 
 (defmacro %setf-key-value (table &rest key-values)
   (with-gensyms (table-sym)

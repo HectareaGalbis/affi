@@ -1,5 +1,5 @@
 
-(in-package #:test-tffi)
+(in-package #:test-affi)
 
 ;; 0. Open lib
 (load-shared-object "libtest-ffi.so")

@@ -1,8 +1,8 @@
 
-(defsystem "trivial-ffi"
+(defsystem "affi"
   :author "Héctor Galbis Sanchis"
-  :description "A minimal and common foreign interface"
-  :depends-on (:alexandria)
+  :description "Another foreign function interface"
+  :depends-on ("alexandria")
   :serial t
   :components ((:module "src"
                 :serial t
@@ -16,24 +16,24 @@
                              (:file "clisp")
                              (:file "interface")))))
 
-(defsystem "trivial-ffi/test"
+(defsystem "affi/test"
   :author "Héctor Galbis Sanchis"
   :description "A minimal and common foreign interface"
-  :depends-on (:trivial-ffi)
+  :depends-on ("affi")
   :serial t
   :components ((:module "test"
                 :components ((:file "package")
                              (:file "test")))))
 
-(defsystem "trivial-ffi/docs"
+(defsystem "affi/docs"
   :author "Héctor Galbis Sanchis"
-  :description "Documentation for trivial-ffi"
+  :description "Documentation for affi"
   :defsystem-depends-on (:adp-github)
-  :depends-on (:trivial-ffi)
+  :depends-on ("affi")
   :serial t
   :class :adp-github
   :components ((:module "scribble"
                 :serial t
                 :components ((:file "package")
                              (:scribble "README")
-                             (:scribble "reference")))))
+                             (:scribble "tutorial")))))
