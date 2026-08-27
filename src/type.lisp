@@ -34,7 +34,7 @@
       :unsigned-long-long-int
       :float
       :double
-      :long-double
+      ; :long-double
       :size-t
       :ssize-t
       :ptrdiff-t
