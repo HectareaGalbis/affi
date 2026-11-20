@@ -14,7 +14,8 @@
                              (:file "sbcl")
                              #+clisp
                              (:file "clisp")
-                             (:file "interface")))))
+                             (:file "interface"))))
+  :in-order-to ((test-op (test-op "affi/test"))))
 
 (defsystem "affi/test"
   :author "Héctor Galbis Sanchis"
@@ -23,7 +24,10 @@
   :serial t
   :components ((:module "test"
                 :components ((:file "package")
-                             (:file "test")))))
+                             (:file "test"))))
+  :perform (test-op (o c)
+             (unless (uiop:symbol-call :test-affi :run-tests)
+               (error "affi tests failed"))))
 
 (defsystem "affi/docs"
   :author "Héctor Galbis Sanchis"
