@@ -47,7 +47,11 @@
                       :int32-t                (sb-alien:signed 32)
                       :uint32-t               (sb-alien:unsigned 32)
                       :int64-t                (sb-alien:signed 64)
-                      :uint64-t               (sb-alien:unsigned 64))
+                      :uint64-t               (sb-alien:unsigned 64)
+                      :bool                   (sb-alien:unsigned 8)
+                      :intptr-t               (sb-alien:signed #.sb-vm:n-machine-word-bits)
+                      :uintptr-t              (sb-alien:unsigned #.sb-vm:n-machine-word-bits)
+                      :wchar-t                #+win32 (sb-alien:unsigned 16) #-win32 (sb-alien:signed 32))
       (values types)))
   
   (defparameter *primitive-type-names* (%make-primitive-type-names))
@@ -76,14 +80,20 @@
   (defmethod %translate-type ((ptype union-type))
     `(sb-alien:union ,(union-type-name ptype)))
 
+  (defun %translate-result-type (ret-type)
+    (if (and (typep ret-type 'primitive-type)
+             (eq (primitive-type-name ret-type) :void))
+        'sb-alien:void
+        (%translate-type ret-type)))
+
   (defmethod %translate-type ((ptype function-type))
-    (let* ((ret-type (function-type-result-type ptype))
-           (t-ret-type (if (and (typep ret-type 'primitive-type)
-                                (eq (primitive-type-name ret-type) :void))
-                           'sb-alien:void
-                           (%translate-type ret-type))))
-      (list* 'sb-alien:function t-ret-type (mapcar #'%translate-type
-                                                   (function-type-argument-types ptype)))))
+    (let ((t-ret-type (%translate-result-type (function-type-result-type ptype))))
+      `(sb-alien:function ,(if (eq (function-type-convention ptype) :stdcall)
+                               `(:stdcall ,t-ret-type)
+                               t-ret-type)
+                          ,@(mapcar #'%translate-type (function-type-argument-types ptype))
+                          ,@(when (function-type-variadic-p ptype)
+                              '(&rest)))))
 
   (defmethod %translate-type ((ptype array-type))
     `(sb-alien:array ,(%translate-type (array-type-data-type ptype)) ,(array-type-size ptype)))
@@ -162,8 +172,8 @@
 
   (defun %define-function (name foreign-name functype args)
     (let* ((translated-functype (%translate-type functype))
-           (translated-result-type (cadr translated-functype))
-           (translated-arg-types (cddr translated-functype))
+           (translated-result-type (%translate-result-type (function-type-result-type functype)))
+           (translated-arg-types (mapcar #'%translate-type (function-type-argument-types functype)))
            (translated-args (loop for translated-arg-type in translated-arg-types
                                   for arg in args
                                   collect (list arg translated-arg-type)))
@@ -176,13 +186,18 @@
                  (make-instance 'function-info :funcvar ',func-var
                                                :functype ',translated-functype)))
          (sb-alien:define-alien-variable (,foreign-name ,func-var) ,translated-functype)
-         (sb-alien:define-alien-routine (,foreign-name ,name) ,translated-result-type ,@translated-args))))
+         ,(if (eq (function-type-convention functype) :stdcall)
+              `(defun ,name (,@args)
+                 (sb-alien:alien-funcall
+                  (sb-alien:extern-alien ,foreign-name ,translated-functype) ,@args))
+              `(sb-alien:define-alien-routine (,foreign-name ,name) ,translated-result-type
+                 ,@translated-args)))))
 
   (defun %define-callback (name functype args body)
     (with-gensyms (alien-callback)
       (let* ((translated-functype (%translate-type functype))
-             (translated-result-type (cadr translated-functype))
-             (translated-arg-types (cddr translated-functype))
+             (translated-result-type (%translate-result-type (function-type-result-type functype)))
+             (translated-arg-types (mapcar #'%translate-type (function-type-argument-types functype)))
              (translated-args (loop for arg in args
                                     for type in translated-arg-types
                                     collect (list arg type))))
@@ -198,4 +213,60 @@
              ,@body)))))
 
   (defun %load-shared-object (pathname dont-save)
-    (sb-alien:load-shared-object pathname :dont-save dont-save)))
+    (sb-alien:load-shared-object pathname :dont-save dont-save))
+
+  (defun %close-shared-object (pathname)
+    (sb-alien:unload-shared-object pathname))
+
+  (defun %foreign-symbol-p (foreign-name)
+    (and (sb-sys:find-foreign-symbol-address foreign-name) t))
+
+  (defun %funcall-pointer (ptr functype args)
+    `(sb-alien:alien-funcall
+      (sb-alien:cast ,ptr (sb-alien:* ,(%translate-type functype))) ,@args))
+
+  (defun %make-null-pointer (type)
+    `(sb-alien:sap-alien (sb-sys:int-sap 0) ,(%translate-type type)))
+
+  (defun %make-pointer (address type)
+    `(sb-alien:sap-alien (sb-sys:int-sap ,address) ,(%translate-type type)))
+
+  (defun %pointer-address (ptr)
+    (sb-sys:sap-int (sb-alien:alien-sap ptr)))
+
+  (defun %offsetof (type slot-name)
+    `(%sbcl-offsetof ',(%translate-type type) ',slot-name))
+
+  (defun %alignof (type)
+    `(%sbcl-alignof ',(%translate-type type)))
+
+  (defun %free-callback (name)
+    (let ((func-info (function-info name)))
+      (unless (and func-info (slot-value func-info 'callbackp))
+        (error "~s is not a callback" name))
+      (with-slots (funcvar functype) func-info
+        `(%sbcl-free-callback ',funcvar ',functype))))
+
+  (defun %string-to-octets (string encoding)
+    (sb-ext:string-to-octets string :external-format encoding))
+
+  (defun %octets-to-string (octets encoding)
+    (sb-ext:octets-to-string octets :external-format encoding)))
+
+
+(defun %sbcl-offsetof (translated-type slot-name)
+  (let ((alien-type (sb-alien::parse-alien-type translated-type nil)))
+    (/ (sb-alien-internals:alien-record-field-offset
+        (sb-alien::slot-or-lose alien-type slot-name))
+       8)))
+
+(defun %sbcl-alignof (translated-type)
+  (/ (sb-alien-internals:alien-type-alignment
+      (sb-alien::parse-alien-type translated-type nil))
+     8))
+
+(defun %sbcl-free-callback (funcvar functype)
+  (when-let ((callback (gethash funcvar sb-alien::*alien-callables*)))
+    (sb-alien::free-alien-callable callback functype)
+    (remhash funcvar sb-alien::*alien-callables*))
+  (values))

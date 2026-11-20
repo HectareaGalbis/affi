@@ -73,7 +73,11 @@
                       :int32-t                ffi:sint32
                       :uint32-t               ffi:uint32
                       :int64-t                ffi:sint64
-                      :uint64-t               ffi:uint64)
+                      :uint64-t               ffi:uint64
+                      :bool                   ffi:uint8
+                      :intptr-t               #+word-size=64 ffi:sint64 #-word-size=64 ffi:sint32
+                      :uintptr-t              #+word-size=64 ffi:uint64 #-word-size=64 ffi:uint32
+                      :wchar-t                #+win32 ffi:uint16 #-win32 ffi:sint32)
       (values types)))
 
   (defparameter *primitive-type-names* (%make-primitive-type-names))
@@ -134,6 +138,11 @@
   ;; it is passed as a function pointer. For that reason, the translation of a function type
   ;; is always the same: arguments are translated in :OUT mode and the result in :IN mode
   ;; (the direction used by callbacks).
+  (defun %translate-convention (functype)
+    (ecase (function-type-convention functype)
+      (:cdecl :stdc)
+      (:stdcall :stdc-stdcall)))
+
   (defmethod %translate-type ((ptype function-type) &optional mode)
     (declare (ignore mode))
     `(ffi:c-function
@@ -142,7 +151,7 @@
                           collect `(,(intern (format nil "ARG~a" i) '#:affi.clisp)
                                     ,(%translate-type arg-type :out))))
       (:return-type ,(%translate-type (function-type-result-type ptype) :in))
-      (:language :stdc)))
+      (:language ,(%translate-convention ptype))))
 
   (defmethod %translate-type ((ptype array-type) &optional (mode :out))
     (ecase mode
@@ -170,7 +179,7 @@
                           collect `(,(intern (format nil "ARG~a" i) '#:affi.clisp)
                                     ,(%translate-type arg-type :in))))
       (:return-type ,(%translate-type (function-type-result-type functype) :out))
-      (:language :stdc)))
+      (:language ,(%translate-convention functype))))
 
   ;; Forms converting values from Lisp to C
   (defun %to-foreign-form (form ptype)
@@ -274,7 +283,7 @@
   (defun %call-function (name functype args)
     (let ((translated-functype (%translate-function-type functype)))
       (%from-foreign-form
-       `(funcall (%cached-function ,name ',translated-functype (load-time-value (list nil)))
+       `(funcall (%cached-function ,name ',translated-functype)
                  ,@(loop for arg in args
                          for arg-type in (function-type-argument-types functype)
                          collect (%to-foreign-form arg arg-type)))
@@ -321,11 +330,83 @@
 
   ;; INCOMPATIBILITY: DONT-SAVE is ignored. CLISP doesn't reopen the libraries when an
   ;; image saved with EXT:SAVEINITMEM is started.
+  (defparameter *shared-objects* (make-hash-table :test 'equal))
+
   (defun %load-shared-object (pathname dont-save)
     (declare (ignore dont-save))
-    (ffi:open-foreign-library (if (pathnamep pathname)
-                                  (namestring pathname)
-                                  pathname))))
+    (let ((name (if (pathnamep pathname)
+                    (namestring pathname)
+                    pathname)))
+      (setf (gethash name *shared-objects*)
+            (ffi:open-foreign-library name))))
+
+  ;; INCOMPATIBILITY: After FFI:CLOSE-FOREIGN-LIBRARY the symbols of the library can still be
+  ;; found, so FOREIGN-SYMBOL-P may keep returning T for them.
+  (defun %close-shared-object (pathname)
+    (let ((name (if (pathnamep pathname)
+                    (namestring pathname)
+                    pathname)))
+      (when-let ((library (gethash name *shared-objects*)))
+        (ffi:close-foreign-library library)
+        (remhash name *shared-objects*)
+        t)))
+
+  (defun %foreign-symbol-p (foreign-name)
+    (handler-case
+        (progn
+          (ffi::find-foreign-variable foreign-name (ffi:parse-c-type 'ffi:char) :default nil nil)
+          t)
+      (error () nil)))
+
+  (defun %funcall-pointer (ptr functype args)
+    (let ((translated-functype (%translate-function-type functype)))
+      (%from-foreign-form
+       `(funcall (%to-function ,ptr ',translated-functype)
+                 ,@(loop for arg in args
+                         for arg-type in (function-type-argument-types functype)
+                         collect (%to-foreign-form arg arg-type)))
+       (function-type-result-type functype))))
+
+  (defun %make-null-pointer (type)
+    (declare (ignore type))
+    nil)
+
+  (defun %make-pointer (address type)
+    `(%make-pointer-value ,address ',(%translate-type type)))
+
+  (defun %pointer-address (ptr)
+    (if (null ptr)
+        0
+        (ffi:foreign-address-unsigned (%address ptr))))
+
+  (defun %offsetof (type slot-name)
+    `(%clisp-offsetof ',(%translate-type type) ',slot-name))
+
+  (defun %alignof (type)
+    `(%clisp-alignof ',(%translate-type type)))
+
+  (defun %free-callback (name)
+    (let ((func-info (function-info name)))
+      (unless (and func-info (slot-value func-info 'callbackp))
+        (error "~s is not a callback" name))
+      `(%clisp-free-callback ',(slot-value func-info 'funcvar))))
+
+  ;; INCOMPATIBILITY: Encodings are CLISP charsets. Keywords are translated to the charset
+  ;; with the same name (:LATIN-1 and :LATIN1 are translated to ISO-8859-1).
+  (defun %encoding (encoding)
+    (let* ((name (case encoding
+                   ((:latin-1 :latin1) "ISO-8859-1")
+                   (t (symbol-name encoding))))
+           (charset (find-symbol name "CHARSET")))
+      (unless charset
+        (error "Unknown encoding ~s" encoding))
+      (ext:make-encoding :charset (symbol-value charset))))
+
+  (defun %string-to-octets (string encoding)
+    (ext:convert-string-to-bytes string (%encoding encoding)))
+
+  (defun %octets-to-string (octets encoding)
+    (ext:convert-string-from-bytes octets (%encoding encoding))))
 
 
 ;; Runtime helpers
@@ -458,10 +539,35 @@
 (defun %find-function (foreign-name c-type)
   (ffi::find-foreign-function foreign-name (ffi:parse-c-type c-type) nil :default nil nil))
 
-(defun %cached-function (foreign-name c-type cache)
-  (or (car cache)
-      (setf (car cache) (%find-function foreign-name c-type))))
+(defvar *cached-functions* (make-hash-table :test 'equal))
+
+(defun %cached-function (foreign-name c-type)
+  (let ((key (cons foreign-name c-type)))
+    (or (gethash key *cached-functions*)
+        (setf (gethash key *cached-functions*) (%find-function foreign-name c-type)))))
 
 (defun %make-callback (function c-type)
   (ffi:with-foreign-object (fv c-type function)
     (ffi:foreign-value fv)))
+
+(defun %make-pointer-value (address c-type)
+  (unless (zerop address)
+    (%cast-value (ffi:unsigned-foreign-address address) c-type)))
+
+(defun %clisp-offsetof (c-type slot-name)
+  (ffi:with-foreign-object (fv c-type)
+    (- (ffi:foreign-address-unsigned (%slot-place fv slot-name))
+       (ffi:foreign-address-unsigned fv))))
+
+(defun %clisp-alignof (c-type)
+  (ffi:with-foreign-object (fv `(ffi:c-struct vector
+                                  (affi.clisp::padding ffi:char)
+                                  (affi.clisp::value ,c-type)))
+    (- (ffi:foreign-address-unsigned (%slot-place fv 'affi.clisp::value))
+       (ffi:foreign-address-unsigned fv))))
+
+(defun %clisp-free-callback (callback-var)
+  (when-let ((callback (symbol-value callback-var)))
+    (ffi:foreign-free callback)
+    (setf (symbol-value callback-var) nil))
+  (values))

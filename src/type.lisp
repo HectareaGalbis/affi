@@ -45,7 +45,15 @@
       :int32-t
       :uint32-t
       :int64-t
-      :uint64-t))
+      :uint64-t
+      :bool
+      :intptr-t
+      :uintptr-t
+      :wchar-t))
+
+  (defparameter *type-aliases* (make-hash-table :test 'eq))
+
+  (defparameter *calling-conventions* '(:cdecl :stdcall))
 
   (defparameter *complex-types*
     '(:struct
@@ -75,7 +83,13 @@
                   :accessor function-type-result-type)
      (argument-types :initarg :argument-types
                      :initform (error "Expected argument-types argument")
-                     :accessor function-type-argument-types)))
+                     :accessor function-type-argument-types)
+     (convention :initarg :convention
+                 :initform :cdecl
+                 :accessor function-type-convention)
+     (variadicp :initarg :variadicp
+                :initform nil
+                :accessor function-type-variadic-p)))
 
   (defclass array-type (ffi-type)
     ((data-type :initarg :data-type
@@ -105,12 +119,65 @@
                        do (format s "> ~s~%" source))
                  (format s "~a" (bad-type-error-message c))))))
   
+  (defun %parse-convention (convention)
+    (unless (member convention *calling-conventions*)
+      (syntax-error "Expected a calling convention: ~{~s~^, ~}" *calling-conventions*))
+    (values convention))
+
+  (defun parse-convention (convention)
+    (with-syntax-error-handler convention
+      (%parse-convention convention)))
+
+  (defun %convention-spec-p (spec)
+    (and (consp spec)
+         (eq (car spec) :convention)))
+
+  (defun %parse-convention-spec (spec)
+    (unless (= (length spec) 2)
+      (syntax-error "Expected 1 and only 1 element after :CONVENTION"))
+    (parse-convention (cadr spec)))
+
+  (defun parse-convention-spec (spec)
+    (with-syntax-error-handler spec
+      (%parse-convention-spec spec)))
+
+  (defun %parse-function-types (types)
+    (let ((convention :cdecl)
+          (variadicp nil))
+      (when (%convention-spec-p (car types))
+        (setf convention (parse-convention-spec (car types)))
+        (setf types (cdr types)))
+      (when (null types)
+        (syntax-error "Expected at least the result type"))
+      (when-let ((rest-position (position '&rest types)))
+        (unless (= rest-position (1- (length types)))
+          (syntax-error "&REST must be the last element"))
+        (when (zerop rest-position)
+          (syntax-error "Expected the result type before &REST"))
+        (setf variadicp t)
+        (setf types (butlast types)))
+      (make-instance 'function-type :result-type (parse-foreign-type (car types))
+                                    :argument-types (mapcar #'parse-foreign-type (cdr types))
+                                    :convention convention
+                                    :variadicp variadicp)))
+
+  (defun parse-function-types (types)
+    (with-syntax-error-handler types
+      (unless (listp types)
+        (syntax-error "Expected a list of types"))
+      (%parse-function-types types)))
+
   (defun %parse-type-name (type-name)
     (cond
       ((symbolp type-name)
-       (unless (member type-name *primitive-types*)
-         (syntax-error "Unknown type"))
-       (make-instance 'primitive-type :name type-name))
+       (multiple-value-bind (alias aliasp) (gethash type-name *type-aliases*)
+         (cond
+           ((member type-name *primitive-types*)
+            (make-instance 'primitive-type :name type-name))
+           (aliasp
+            (parse-foreign-type alias))
+           (t
+            (syntax-error "Unknown type")))))
       ((consp type-name)
        (case (car type-name)
          ((:struct :union)
@@ -122,12 +189,7 @@
             (let ((instance-type (if (eq (car type-name) :struct) 'struct-type 'union-type)))
               (make-instance instance-type :name name))))
          ((:function)
-          (unless (not (null (cdr type-name)))
-            (syntax-error "Expected at least the result type"))
-          (loop for arg-type in (cdr type-name)
-                collect (parse-foreign-type arg-type) into parsed-arg-types
-                finally (return (make-instance 'function-type :result-type (car parsed-arg-types)
-                                                              :argument-types (cdr parsed-arg-types)))))
+          (%parse-function-types (cdr type-name)))
          (otherwise
           (syntax-error "Expected :STRUCT, :UNION or :FUNCTION"))))
       (t (syntax-error "Expected a symbol or a list"))))
