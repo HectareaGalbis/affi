@@ -165,18 +165,40 @@
   (check (string= (foreign-string-to-lisp text) "this is awesome!"))
   (check (string= (foreign-string-to-lisp text :count 4) "this"))
   (check (null (foreign-string-to-lisp (make-null-pointer (:char *)))))
-  (let ((str (lisp-string-to-foreign "año ñu")))
-    (unwind-protect
-         (progn
-           (check (= (foreign-strlen str) 8))
-           (check (string= (foreign-string-to-lisp str) "año ñu")))
-      (free str)))
-  (with-foreign-string ((str "hello")
-                        (latin "año" :encoding :latin-1))
+  (with-allocate ((str :char 16))
+    (check (eq (lisp-string-to-foreign "año ñu" str) str))
+    (check (= (foreign-strlen str) 8))
+    (check (string= (foreign-string-to-lisp str) "año ñu"))
+    (lisp-string-to-foreign "hello" str)
     (text-uppercase str)
-    (check (string= (foreign-string-to-lisp str) "HELLO"))
-    (check (= (foreign-strlen latin) 3))
-    (check (string= (foreign-string-to-lisp latin :encoding :latin-1) "año"))))
+    (check (string= (foreign-string-to-lisp str) "HELLO")))
+  ;; Round trip with several encodings
+  (with-allocate ((buffer :char 32))
+    (dolist (encoding '(:utf-8 :latin-1 :utf-16le :utf-32le))
+      (lisp-string-to-foreign "año ñu" buffer :encoding encoding)
+      (check (string= (foreign-string-to-lisp buffer :encoding encoding) "año ñu"))))
+  ;; The terminator has the size of the null character of the encoding
+  (with-allocate ((bytes :uint8-t 8))
+    (fill-memory bytes 255 8)
+    (lisp-string-to-foreign "ab" bytes :encoding :latin-1)
+    (check (equal (loop for i from 0 below 4 collect (deref bytes i))
+                  '(97 98 0 255)))
+    (fill-memory bytes 255 8)
+    (lisp-string-to-foreign "a" bytes :encoding :utf-16le)
+    (check (equal (loop for i from 0 below 5 collect (deref bytes i))
+                  '(97 0 0 0 255))))
+  ;; Size of the encoded string including the terminator
+  (check (= (foreign-string-size "") 1))
+  (check (= (foreign-string-size "año") 5))
+  (check (= (foreign-string-size "año" :encoding :latin-1) 4))
+  (check (= (foreign-string-size "año" :encoding :utf-16le) 8))
+  (check (= (foreign-string-size "año" :encoding :utf-32le) 16))
+  (let* ((string "año ñu")
+         (size (foreign-string-size string)))
+    (with-allocate ((str :char size))
+      (lisp-string-to-foreign string str)
+      (check (= (foreign-strlen str) (1- size)))
+      (check (string= (foreign-string-to-lisp str) string)))))
 
 
 ;; 9. Pointers
@@ -241,36 +263,50 @@
   (with-allocate ((bytes :uint8-t 4))
     (fill-memory bytes 255 4)
     (check (loop for i from 0 below 4
-                 always (= (deref bytes i) 255)))))
+                 always (= (deref bytes i) 255))))
+  ;; Size computed at runtime and definitions processed sequentially
+  (let ((n (length (list 1 2 3 4 5))))
+    (with-allocate ((ints :int n)
+                    (copy :int (* 2 n)))
+      (dotimes (i n)
+        (setf (deref ints i) (* i i)))
+      (copy-memory copy ints (* n (sizeof :int)))
+      (check (equal (loop for i from 0 below n collect (deref copy i))
+                    '(0 1 4 9 16)))
+      #+sbcl
+      (check (on-control-stack-p ints))
+      #+sbcl
+      (check (on-control-stack-p copy))))
+  ;; Big runtime size
+  (let ((n 100000))
+    (with-allocate ((big :uint8-t n))
+      (fill-memory big 7 n)
+      (check (= (deref big (1- n)) 7)))))
+
+#+sbcl
+(defun on-control-stack-p (ptr)
+  (flet ((thread-slot-address (slot)
+           (sb-sys:sap-int (sb-vm::current-thread-offset-sap slot))))
+    (< (thread-slot-address sb-vm::thread-control-stack-start-slot)
+       (pointer-address ptr)
+       (thread-slot-address sb-vm::thread-control-stack-end-slot))))
 
 
-;; 12. Type aliases and enumerations
-
-(define-type my-int :int)
-(define-type int-ptr (:int *))
+;; 12. Enumerations
 
 (define-enum color
   :red
   (:green 5)
   :blue)
 
-(define-function (mult2-alias "mult2") my-int ((x my-int)))
-(define-function (check-fibo-7-alias "check_fibo_7") my-int ((fibo7 int-ptr)))
-
-(defun test-aliases-and-enums ()
-  (check (= (sizeof my-int) (sizeof :int)))
-  (check (= (sizeof int-ptr) (sizeof (:int *))))
-  (check (= (sizeof (my-int 10)) (sizeof (:int 10))))
-  (check (= (mult2-alias 21) 42))
-  (check (= (check-fibo-7-alias (addr (deref fibo 7))) 1))
-  (check (= (sizeof color) (sizeof :int)))
+(defun test-enums ()
   (check (= (enum-value 'color :red) 0))
   (check (= (enum-value 'color :green) 5))
   (check (= (enum-value 'color :blue) 6))
   (check (eq (enum-key 'color 5) :green))
   (check (null (enum-key 'color 1)))
   (check (= (mult2 (enum-value 'color :blue)) 12))
-  (stack-allocate ((c color (enum-value 'color :green)))
+  (stack-allocate ((c :int (enum-value 'color :green)))
     (check (eq (enum-key 'color c) :green))))
 
 
@@ -300,6 +336,32 @@
   (c :char)
   (d :double))
 
+;; Multidimensional arrays: dimensions are read as in C
+
+(defun test-multidimensional-arrays ()
+  (check (= (sizeof (:int 2 3)) (* 6 (sizeof :int))))
+  (check (= (sizeof (:int 2 3 *)) (sizeof (:void *))))
+  (check (= (sizeof (:int * 2 3)) (* 6 (sizeof (:int *)))))
+  ;; int m[2][3]: the element [i][j] is at the position i*3+j
+  (stack-allocate ((m (:int 2 3)))
+    (let ((flat (cast (addr m) (:int *))))
+      (dotimes (k 6)
+        (setf (deref flat k) k))
+      (check (equal (loop for i from 0 below 2
+                          collect (loop for j from 0 below 3
+                                        collect (deref (deref m i) j)))
+                    '((0 1 2) (3 4 5))))
+      ;; Several indices at once
+      (check (= (deref m 1 2) 5))
+      (setf (deref m 1 0) 30)
+      (check (= (deref flat 3) 30))
+      (check (= (pointer-address (addr (deref m 1 2)))
+                (+ (pointer-address flat) (* 5 (sizeof :int)))))))
+  (stack-allocate ((cube (:int 2 3 4)))
+    (setf (deref cube 1 2 3) 99)
+    (check (= (deref (cast (addr cube) (:int *)) (+ (* 1 12) (* 2 4) 3)) 99))
+    (check (= (deref cube 1 2 3) 99))))
+
 (defun test-offsets-and-alignment ()
   (check (= (alignof :char) 1))
   (check (= (alignof :int) 4))
@@ -322,19 +384,20 @@
 (define-function (snprintf "snprintf") :int ((buffer (:char *)) (size :size-t) (format (:char *)) &rest))
 
 (defun test-variadic-functions ()
-  (with-allocate ((buffer :char 64))
-    (with-foreign-string ((format "%d %.2f %c %s"))
-      (check (= (snprintf buffer 64 format :int 3 :float 2.5 :char (char-code #\z) (:char *) text)
-                25))
-      (check (string= (foreign-string-to-lisp buffer) "3 2.50 z this is awesome!")))
-    (with-foreign-string ((format "%ld|%u|%f"))
-      (check (= (call-function "snprintf" (:int (:char *) :size-t (:char *) &rest)
-                               buffer 64 format :long 1234567890123 :unsigned-short 7 :double 0.5d0)
-                24))
-      (check (string= (foreign-string-to-lisp buffer) "1234567890123|7|0.500000")))
-    (with-foreign-string ((format "no arguments"))
-      (check (= (snprintf buffer 64 format) 12))
-      (check (string= (foreign-string-to-lisp buffer) "no arguments")))))
+  (with-allocate ((buffer :char 64)
+                  (format :char 64))
+    (lisp-string-to-foreign "%d %.2f %c %s" format)
+    (check (= (snprintf buffer 64 format :int 3 :float 2.5 :char (char-code #\z) (:char *) text)
+              25))
+    (check (string= (foreign-string-to-lisp buffer) "3 2.50 z this is awesome!"))
+    (lisp-string-to-foreign "%ld|%u|%f" format)
+    (check (= (call-function "snprintf" (:int (:char *) :size-t (:char *) &rest)
+                             buffer 64 format :long 1234567890123 :unsigned-short 7 :double 0.5d0)
+              24))
+    (check (string= (foreign-string-to-lisp buffer) "1234567890123|7|0.500000"))
+    (lisp-string-to-foreign "no arguments" format)
+    (check (= (snprintf buffer 64 format) 12))
+    (check (string= (foreign-string-to-lisp buffer) "no arguments"))))
 
 
 ;; 16. Shared objects and symbols
@@ -393,9 +456,10 @@
     (test-pointers)
     (test-function-pointers)
     (test-memory)
-    (test-aliases-and-enums)
+    (test-enums)
     (test-new-primitive-types)
     (test-offsets-and-alignment)
+    (test-multidimensional-arrays)
     (test-variadic-functions)
     (test-shared-objects)
     (test-documentation)

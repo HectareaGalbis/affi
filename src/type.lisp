@@ -51,8 +51,6 @@
       :uintptr-t
       :wchar-t))
 
-  (defparameter *type-aliases* (make-hash-table :test 'eq))
-
   (defparameter *calling-conventions* '(:cdecl :stdcall))
 
   (defparameter *complex-types*
@@ -170,14 +168,9 @@
   (defun %parse-type-name (type-name)
     (cond
       ((symbolp type-name)
-       (multiple-value-bind (alias aliasp) (gethash type-name *type-aliases*)
-         (cond
-           ((member type-name *primitive-types*)
-            (make-instance 'primitive-type :name type-name))
-           (aliasp
-            (parse-foreign-type alias))
-           (t
-            (syntax-error "Unknown type")))))
+       (unless (member type-name *primitive-types*)
+         (syntax-error "Unknown type"))
+       (make-instance 'primitive-type :name type-name))
       ((consp type-name)
        (case (car type-name)
          ((:struct :union)
@@ -212,9 +205,17 @@
     (with-syntax-error-handler specifier
       (%parse-type-specifier specifier data-type)))
 
+  ;; Specifiers are applied from left to right, except consecutive array dimensions,
+  ;; which are read in the same order as in C: (:INT 4 3) is int[4][3], an array of
+  ;; 4 arrays of 3 integers.
   (defun parse-type-specifiers (specifiers data-type)
-    (loop for specifier in specifiers
-          do (setf data-type (parse-type-specifier specifier data-type)))
+    (loop while specifiers
+          do (if (integerp (car specifiers))
+                 (let ((dimensions (loop while (integerp (car specifiers))
+                                         collect (pop specifiers))))
+                   (dolist (dimension (reverse dimensions))
+                     (setf data-type (parse-type-specifier dimension data-type))))
+                 (setf data-type (parse-type-specifier (pop specifiers) data-type))))
     (values data-type))
   
   (defun %parse-foreign-type (ctype)

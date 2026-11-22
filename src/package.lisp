@@ -7,5 +7,5 @@
            #:funcall-pointer #:free-callback #:close-shared-object #:foreign-symbol-p
            #:make-null-pointer #:make-pointer #:pointer-address #:pointer-eq
            #:copy-memory #:fill-memory #:allocate-zeroed #:with-allocate #:offsetof #:alignof
-           #:foreign-string-to-lisp #:lisp-string-to-foreign #:with-foreign-string
-           #:define-type #:define-enum #:enum-value #:enum-key))
+           #:foreign-string-to-lisp #:lisp-string-to-foreign #:foreign-string-size
+           #:define-enum #:enum-value #:enum-key))

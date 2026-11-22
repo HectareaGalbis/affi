@@ -376,15 +376,21 @@ Loads a shared library.
       (syntax-error "Expected a symbol as the first element"))))
 
 (defmacro with-allocate ((&rest definitions) &body body)
+  "
+Allocates memory on the stack.
+Each definition is a list (VAR TYPE &optional (SIZE 1)). VAR is bound to a pointer
+to SIZE contiguous elements of type TYPE. SIZE is evaluated and can be computed at runtime.
+The definitions are processed sequentially (like LET*).
+The memory has dynamic extent: the pointers must not be used after the body exits and
+must not be freed with FREE. Use ALLOCATE for big or long-lived memory.
+"
   (mapc #'%check-with-allocate-definition definitions)
   (if (null definitions)
       `(locally ,@body)
       (destructuring-bind ((var type &optional (size 1)) &rest rest-definitions) definitions
-        `(let ((,var (allocate ,type ,size)))
-           (unwind-protect
-                (with-allocate (,@rest-definitions)
-                  ,@body)
-             (free ,var))))))
+        (%with-stack-memory var (parse-foreign-type type) size
+                            `((with-allocate (,@rest-definitions)
+                                ,@body))))))
 
 (defmacro offsetof (type slot-name)
   (let ((parsed-type (parse-foreign-type type)))
@@ -399,62 +405,58 @@ Loads a shared library.
 
 ;; Strings
 
+;; Number of bytes of the null character (the terminator) in ENCODING: 1 for UTF-8 and
+;; single-byte encodings, 2 for UTF-16 and 4 for UTF-32.
+(defun %null-character-size (encoding)
+  (length (%string-to-octets (string (code-char 0)) encoding)))
+
+;; Number of bytes before the first null character of size CHAR-SIZE.
+(defun %foreign-string-length (bytes char-size)
+  (loop for i from 0 by char-size
+        until (loop for j from i below (+ i char-size)
+                    always (zerop (deref bytes j)))
+        finally (return i)))
+
 (defun foreign-string-to-lisp (ptr &key (encoding :utf-8) count)
+  "
+Returns a Lisp string decoded with ENCODING from the memory pointed by PTR.
+If COUNT is NIL, the foreign string must be null-terminated. Otherwise, COUNT
+bytes are decoded. Returns NIL if PTR is the null pointer.
+"
   (unless (null-pointer ptr)
     (let* ((bytes (cast ptr (:uint8-t *)))
            (len (or count
-                    (loop for i from 0
-                          until (zerop (deref bytes i))
-                          finally (return i))))
+                    (%foreign-string-length bytes (%null-character-size encoding))))
            (octets (make-array len :element-type '(unsigned-byte 8))))
       (dotimes (i len)
         (setf (aref octets i) (deref bytes i)))
       (%octets-to-string octets encoding))))
 
-(defun lisp-string-to-foreign (string &key (encoding :utf-8))
-  (let* ((octets (%string-to-octets string encoding))
-         (len (length octets))
-         (ptr (allocate :char (+ len 4)))
-         (bytes (cast ptr (:uint8-t *))))
-    (dotimes (i len)
+;; Octets of STRING encoded with ENCODING, followed by the null terminator.
+(defun %null-terminated-octets (string encoding)
+  (%string-to-octets (concatenate 'string string (string (code-char 0))) encoding))
+
+(defun foreign-string-size (string &key (encoding :utf-8))
+  "
+Returns the number of bytes needed to store STRING encoded with ENCODING,
+including the null terminator.
+"
+  (length (%null-terminated-octets string encoding)))
+
+(defun lisp-string-to-foreign (string ptr &key (encoding :utf-8))
+  "
+Copies STRING encoded with ENCODING into the memory pointed by PTR, followed by
+a null terminator. PTR must point to at least (FOREIGN-STRING-SIZE STRING :ENCODING
+ENCODING) bytes. Returns PTR.
+"
+  (let ((octets (%null-terminated-octets string encoding))
+        (bytes (cast ptr (:uint8-t *))))
+    (dotimes (i (length octets))
       (setf (deref bytes i) (aref octets i)))
-    (dotimes (i 4)
-      (setf (deref bytes (+ len i)) 0))
     (values ptr)))
 
-(defun %check-with-foreign-string-definition (definition)
-  (with-syntax-error-handler definition
-    (unless (and (listp definition)
-                 (>= (length definition) 2)
-                 (evenp (length (cddr definition))))
-      (syntax-error "Expected a list (VAR STRING &key ENCODING)"))
-    (unless (symbolp (car definition))
-      (syntax-error "Expected a symbol as the first element"))))
 
-(defmacro with-foreign-string ((&rest definitions) &body body)
-  (mapc #'%check-with-foreign-string-definition definitions)
-  (if (null definitions)
-      `(locally ,@body)
-      (destructuring-bind ((var string &rest keys) &rest rest-definitions) definitions
-        `(let ((,var (lisp-string-to-foreign ,string ,@keys)))
-           (unwind-protect
-                (with-foreign-string (,@rest-definitions)
-                  ,@body)
-             (free ,var))))))
-
-
-;; Types
-
-(defmacro define-type (name type)
-  (with-syntax-error-handler `(define-type ,name ,type)
-    (unless (and (symbolp name) name)
-      (syntax-error "Expected a symbol as the name"))
-    (when (member name *primitive-types*)
-      (syntax-error "~s is a primitive type" name))
-    (parse-foreign-type type))
-  `(eval-when (:compile-toplevel :load-toplevel :execute)
-     (setf (gethash ',name *type-aliases*) ',type)
-     ',name))
+;; Enumerations
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defparameter *enums* (make-hash-table :test 'eq)))
@@ -463,8 +465,6 @@ Loads a shared library.
   (with-syntax-error-handler `(define-enum ,name ,@specs)
     (unless (and (symbolp name) name)
       (syntax-error "Expected a symbol as the name"))
-    (when (member name *primitive-types*)
-      (syntax-error "~s is a primitive type" name))
     (let ((next-value 0))
       (loop for spec in specs
             for (key value) = (with-syntax-error-handler spec
@@ -481,7 +481,6 @@ Loads a shared library.
             collect (cons key value) into alist
             finally (return
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
-                         (setf (gethash ',name *type-aliases*) :int)
                          (setf (gethash ',name *enums*) ',alist)
                          ',name))))))
 

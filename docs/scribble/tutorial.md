@@ -81,15 +81,15 @@ We have seen already some specifiers\. These are used to denote pointers and arr
 (:int * 5 6 * *)
 `````
 
-This is a pointer to a pointer of an array of 6 elements of arrays of 5 elements of pointers to integers\.
+This is a pointer to a pointer to an array of 5 elements of arrays of 6 elements of pointers to integers\. In C\: ```int *(**)[5][6]```\.
 
-Similarly to C\, specifiers should be read backwards\.
+Similarly to C\, specifiers should be read backwards\. The only exception are consecutive array dimensions\, which are written in the same order as in C\: ```(:int 4 3)``` is ```int[4][3]```\, an array of 4 elements of arrays of 3 integers\.
 
 <table>
 <tr>
 <td>**AFFI**</td><td>**C**</td><td>**Lisp**</td></tr><tr>
-<td>```(:int *)```<br>```(:int 5 *)```<br>```(:int * 5 *)```</td><td>```int*```<br>```int(*)[5]```<br>```int *(*)[5]```</td><td>; Pointer object</td></tr><tr>
-<td>```(:int * 5)```<br>```(:int 5 * 5)```</td><td>```int*[5]```<br>```int (*[5])[5]```</td><td>; Array object</td></tr></table>
+<td>```(:int *)```<br>```(:int 5 *)```<br>```(:int * 5 *)```<br>```(:int 4 3 *)```</td><td>```int*```<br>```int(*)[5]```<br>```int *(*)[5]```<br>```int(*)[4][3]```</td><td>; Pointer object</td></tr><tr>
+<td>```(:int * 5)```<br>```(:int 5 * 5)```<br>```(:int 4 3)```<br>```(:int * 4 3)```</td><td>```int*[5]```<br>```int (*[5])[5]```<br>```int[4][3]```<br>```int*[4][3]```</td><td>; Array object</td></tr></table>
 
 If the last specifier is the symbol ```*```\, then the type is a pointer\. Otherwise\, if the last specifier is a positive integer\, the type is an array\.
 

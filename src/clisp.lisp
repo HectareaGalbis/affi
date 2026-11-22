@@ -229,6 +229,15 @@
                        `(,(%stack-allocate rest-definitions body))
                        body)))))))
 
+  ;; FFI:WITH-FOREIGN-OBJECT allocates on the stack and evaluates its type, so the
+  ;; size of the array can be computed at runtime.
+  (defun %with-stack-memory (var type size body)
+    (let ((place (%internal-name "STACK" var))
+          (c-type (%translate-type type)))
+      `(ffi:with-foreign-object (,place (list 'ffi:c-array ',c-type ,size))
+         (let ((,var (%retype ,place (ffi:parse-c-type ',c-type))))
+           ,@body))))
+
   (defun %addr (expr)
     (if (symbolp expr)
         (if-let ((func-info (function-info expr)))
@@ -392,10 +401,15 @@
       `(%clisp-free-callback ',(slot-value func-info 'funcvar))))
 
   ;; INCOMPATIBILITY: Encodings are CLISP charsets. Keywords are translated to the charset
-  ;; with the same name (:LATIN-1 and :LATIN1 are translated to ISO-8859-1).
+  ;; with the same name, except :LATIN-1 and :LATIN1 (ISO-8859-1) and the SBCL names of
+  ;; UTF-16 and UTF-32 with explicit endianness (:UTF-16LE, :UTF-32BE, etc.).
   (defun %encoding (encoding)
     (let* ((name (case encoding
                    ((:latin-1 :latin1) "ISO-8859-1")
+                   (:utf-16le "UNICODE-16-LITTLE-ENDIAN")
+                   (:utf-16be "UNICODE-16-BIG-ENDIAN")
+                   (:utf-32le "UNICODE-32-LITTLE-ENDIAN")
+                   (:utf-32be "UNICODE-32-BIG-ENDIAN")
                    (t (symbol-name encoding))))
            (charset (find-symbol name "CHARSET")))
       (unless charset

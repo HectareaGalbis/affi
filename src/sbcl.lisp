@@ -133,14 +133,25 @@
                 `(sb-alien:addr ,funcvar)))
           `(sb-alien:addr ,expr))
         (case (car expr)
-          (deref `(sb-alien:addr (sb-alien:deref ,@(cdr expr))))
+          (deref `(sb-alien:addr ,(%deref-form (cadr expr) (cddr expr))))
           (slot `(sb-alien:addr (sb-alien:slot ,@(cdr expr)))))))
   
+  ;; SB-ALIEN:DEREF takes one index per dimension of the array type, and every array
+  ;; type of affi has one dimension (multidimensional arrays are arrays of arrays).
+  ;; So each index is applied to the result of the previous one.
+  (defun %deref-form (obj indices)
+    (if (null indices)
+        `(sb-alien:deref ,obj)
+        (reduce (lambda (form index) `(sb-alien:deref ,form ,index))
+                indices :initial-value obj)))
+
   (defun %deref (obj indices)
-    (apply #'sb-alien:deref obj indices))
+    (if (null indices)
+        (sb-alien:deref obj)
+        (reduce #'sb-alien:deref indices :initial-value obj)))
 
   (defun %setf-deref (obj indices new-value)
-    `(setf (sb-alien:deref ,obj ,@indices) ,new-value))
+    `(setf ,(%deref-form obj indices) ,new-value))
 
   (defun %slot (obj slot-name)
     (sb-alien:slot obj slot-name))
@@ -246,6 +257,19 @@
         (error "~s is not a callback" name))
       (with-slots (funcvar functype) func-info
         `(%sbcl-free-callback ',funcvar ',functype))))
+
+  ;; The memory is a dynamic-extent octet vector. SBCL only allocates it on the stack
+  ;; when its length is known to be an array index, hence the THE form.
+  (defun %with-stack-memory (var type size body)
+    (with-gensyms (buffer)
+      (let ((translated-type (%translate-type type)))
+        `(let ((,buffer (make-array (the (mod ,array-dimension-limit)
+                                         (* ,size (sb-alien:alien-size ,translated-type :bytes)))
+                                    :element-type '(unsigned-byte 8))))
+           (declare (dynamic-extent ,buffer))
+           (sb-sys:with-pinned-objects (,buffer)
+             (let ((,var (sb-alien:sap-alien (sb-sys:vector-sap ,buffer) (* ,translated-type))))
+               ,@body))))))
 
   (defun %string-to-octets (string encoding)
     (sb-ext:string-to-octets string :external-format encoding))

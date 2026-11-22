@@ -120,9 +120,9 @@ We have seen already some specifiers. These are used to denote pointers and arra
 (:int * 5 6 * *)
 }
 
-This is a pointer to a pointer of an array of 6 elements of arrays of 5 elements of pointers to integers.
+This is a pointer to a pointer to an array of 5 elements of arrays of 6 elements of pointers to integers. In C: @code{int *(**)[5][6]}.
 
-Similarly to C, specifiers should be read backwards.
+Similarly to C, specifiers should be read backwards. The only exception are consecutive array dimensions, which are written in the same order as in C: @code{(:int 4 3)} is @code{int[4][3]}, an array of 4 elements of arrays of 3 integers.
 
 @table[
 @row[@cell{@bold{AFFI}}  @cell{@bold{C}}  @cell{@bold{Lisp}}]
@@ -130,17 +130,23 @@ Similarly to C, specifiers should be read backwards.
 @row[
      @cell{@code{(:int *)}
 @code{(:int 5 *)}
-@code{(:int * 5 *)}}
+@code{(:int * 5 *)}
+@code{(:int 4 3 *)}}
      @cell{@code{int*}
 @code{int(*)[5]}
-@code{int *(*)[5]}}
+@code{int *(*)[5]}
+@code{int(*)[4][3]}}
      @cell{; Pointer object}]
 
 @row[
     @cell{@code{(:int * 5)}
-@code{(:int 5 * 5)}}
+@code{(:int 5 * 5)}
+@code{(:int 4 3)}
+@code{(:int * 4 3)}}
     @cell{@code{int*[5]}
-@code{int (*[5])[5]}}
+@code{int (*[5])[5]}
+@code{int[4][3]}
+@code{int*[4][3]}}
     @cell{; Array object}
 ]
 ]
